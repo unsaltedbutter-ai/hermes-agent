@@ -2743,6 +2743,39 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "nostr",
+        "label": "Nostr",
+        "emoji": "🔑",
+        "token_var": "NOSTR_PRIVATE_KEY",
+        "setup_instructions": [
+            "1. Get a Nostr keypair:",
+            "   - Export your nsec from any Nostr client (Damus, Amethyst, Snort)",
+            "   - Or generate a fresh one with the Python snippet in the Nostr setup guide",
+            "2. Enter your nsec below — it will be stored in ~/.hermes/.env",
+            "3. Choose one or more wss:// relay URLs",
+            "   Recommended: wss://relay.damus.io,wss://nos.lol",
+            "4. Add your own npub to NOSTR_ALLOWED_NPUBS to be the first authorized user",
+            "5. Send a NIP-17 encrypted DM to the bot's npub from any Nostr client",
+        ],
+        "vars": [
+            {"name": "NOSTR_PRIVATE_KEY", "prompt": "Nostr private key (nsec bech32 or 64-char hex)", "password": True,
+             "help": "The bot's Nostr private key. Keep this secret — it controls the bot's identity."},
+            {"name": "NOSTR_RELAYS", "prompt": "Relay URLs (comma-separated wss:// URLs)", "password": False,
+             "help": "Example: wss://relay.damus.io,wss://nos.lol"},
+            {"name": "NOSTR_ALLOWED_NPUBS", "prompt": "Allowed npubs (comma-separated, * for open access, empty to deny all)", "password": False,
+             "is_allowlist": True,
+             "help": "Set * to allow anyone. Leave empty to deny all inbound DMs (safest default). Otherwise list specific npubs."},
+            {"name": "NOSTR_HOME_CHANNEL", "prompt": "Home channel npub for cron/notifications (or empty)", "password": False,
+             "help": "Your npub — used to deliver cron results and background notifications."},
+            {"name": "NOSTR_BOT_NAME", "prompt": "Bot display name (or empty for npub)", "password": False,
+             "help": "Shown in the bot's Kind 0 profile. Defaults to the bot's npub."},
+            {"name": "NOSTR_NIP05", "prompt": "NIP-05 identifier e.g. bot@yourdomain.com (or empty)", "password": False,
+             "help": "Optional verified identity. Requires a .well-known/nostr.json endpoint on your domain."},
+            {"name": "NOSTR_LUD16", "prompt": "Lightning address for zaps e.g. bot@yourdomain.com (or empty)", "password": False,
+             "help": "Optional LUD-16 Lightning address. Lets clients send zaps to the bot."},
+        ],
+    },
+    {
         "key": "yuanbao",
         "label": "Yuanbao",
         "emoji": "💎",
@@ -3806,6 +3839,9 @@ def gateway_setup():
             _setup_qqbot()
         elif platform["key"] == "wecom":
             _setup_wecom()
+        elif platform["key"] == "nostr":
+            from hermes_cli.setup import _setup_nostr as _setup_nostr_validated
+            _setup_nostr_validated()
         else:
             _setup_standard_platform(platform)
 

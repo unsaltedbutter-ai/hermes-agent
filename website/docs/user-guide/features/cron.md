@@ -236,6 +236,7 @@ When scheduling jobs, you specify where the output goes:
 | `"wecom"` | WeCom | |
 | `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
+| `"nostr"` | Nostr home channel | Uses `NOSTR_HOME_CHANNEL` |
 | `"qqbot"` | QQ Bot (Tencent QQ) | |
 
 The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.

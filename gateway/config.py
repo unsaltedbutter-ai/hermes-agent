@@ -68,6 +68,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    NOSTR = "nostr"
 
 
 @dataclass
@@ -1356,6 +1357,44 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
         if yuanbao_group_allow_from:
             extra["group_allow_from"] = yuanbao_group_allow_from
+
+    # Nostr
+    nostr_privkey = os.getenv("NOSTR_PRIVATE_KEY")
+    nostr_relays = os.getenv("NOSTR_RELAYS", "")
+    if nostr_privkey and nostr_relays:
+        if Platform.NOSTR not in config.platforms:
+            config.platforms[Platform.NOSTR] = PlatformConfig()
+        config.platforms[Platform.NOSTR].enabled = True
+        config.platforms[Platform.NOSTR].token = nostr_privkey
+        config.platforms[Platform.NOSTR].extra["relays"] = nostr_relays
+        for _env_key, _extra_key in (
+            ("NOSTR_BOT_NAME", "name"),
+            ("NOSTR_BOT_ABOUT", "about"),
+            ("NOSTR_BOT_PICTURE", "picture"),
+            ("NOSTR_NIP05", "nip05"),
+            ("NOSTR_LUD16", "lud16"),
+            ("NOSTR_BOT_WEBSITE", "website"),
+            ("NOSTR_EXPIRATION_MINUTES", "expiration_minutes"),
+            ("NOSTR_LOOKBACK_MINUTES", "lookback_minutes"),
+        ):
+            _val = os.getenv(_env_key, "").strip()
+            if _val:
+                config.platforms[Platform.NOSTR].extra[_extra_key] = _val
+    nostr_home = os.getenv("NOSTR_HOME_CHANNEL")
+    if nostr_home and Platform.NOSTR in config.platforms:
+        from gateway.platforms.nostr import parse_pubkey as _parse_nostr_pubkey
+        pk = _parse_nostr_pubkey(nostr_home)
+        if pk is None:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Nostr: NOSTR_HOME_CHANNEL is not a valid npub or hex pubkey — ignoring"
+            )
+        else:
+            config.platforms[Platform.NOSTR].home_channel = HomeChannel(
+                platform=Platform.NOSTR,
+                chat_id=pk.to_hex(),
+                name=os.getenv("NOSTR_HOME_CHANNEL_NAME", "Owner"),
+            )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

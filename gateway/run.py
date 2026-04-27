@@ -454,6 +454,19 @@ from gateway.whatsapp_identity import (
 )
 
 
+def _expand_nostr_auth_aliases(value: str) -> set:
+    """Return both npub bech32 and hex forms of a Nostr pubkey."""
+    value = (value or "").strip()
+    if not value or value == "*":
+        return {value} if value else set()
+    try:
+        from nostr_sdk import PublicKey
+        pk = PublicKey.parse(value)
+        return {pk.to_hex(), pk.to_bech32()}
+    except Exception:
+        return {value}
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -3368,6 +3381,13 @@ class GatewayRunner:
                 return None
             return YuanbaoAdapter(config)
 
+        elif platform == Platform.NOSTR:
+            from gateway.platforms.nostr import NostrAdapter, check_nostr_requirements
+            if not check_nostr_requirements():
+                logger.warning("Nostr: missing dependencies. Run: pip install 'hermes-agent[nostr]'")
+                return None
+            return NostrAdapter(config)
+
         return None
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
@@ -3410,6 +3430,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+            Platform.NOSTR: "NOSTR_ALLOWED_NPUBS",
         }
         platform_group_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -3433,6 +3454,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+            Platform.NOSTR: "NOSTR_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -3515,6 +3537,14 @@ class GatewayRunner:
             if normalized_user_id:
                 check_ids.add(normalized_user_id)
 
+        if source.platform == Platform.NOSTR:
+            expanded = set()
+            for allowed_id in allowed_ids:
+                expanded.update(_expand_nostr_auth_aliases(allowed_id))
+            if expanded:
+                allowed_ids = expanded
+            check_ids.update(_expand_nostr_auth_aliases(user_id))
+
         return bool(check_ids & allowed_ids)
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
@@ -3523,11 +3553,9 @@ class GatewayRunner:
         Resolution order:
         1. Explicit per-platform ``unauthorized_dm_behavior`` in config — always wins.
         2. Explicit global ``unauthorized_dm_behavior`` in config — wins when no per-platform.
-        3. When an allowlist (``PLATFORM_ALLOWED_USERS`` or ``GATEWAY_ALLOWED_USERS``) is
-           configured, default to ``"ignore"`` — the allowlist signals that the owner has
-           deliberately restricted access; spamming unknown contacts with pairing codes
-           is both noisy and a potential info-leak. (#9337)
-        4. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
+        3. Nostr always defaults to ``"ignore"``.
+        4. Allowlist (``PLATFORM_ALLOWED_USERS`` or ``GATEWAY_ALLOWED_USERS``) configured → ``"ignore"`` (#9337).
+        5. No allowlist and no explicit config → ``"pair"``.
         """
         config = getattr(self, "config", None)
 
@@ -3542,6 +3570,9 @@ class GatewayRunner:
         if config and hasattr(config, "unauthorized_dm_behavior"):
             if config.unauthorized_dm_behavior != "pair":  # non-default → explicit override
                 return config.unauthorized_dm_behavior
+
+        if platform == Platform.NOSTR:
+            return "ignore"
 
         # No explicit override.  Fall back to allowlist-aware default:
         # if any allowlist is configured for this platform, silently drop

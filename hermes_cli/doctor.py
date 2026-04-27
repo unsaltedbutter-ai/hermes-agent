@@ -227,6 +227,7 @@ def run_doctor(args):
         ("croniter", "Croniter (cron expressions)"),
         ("telegram", "python-telegram-bot"),
         ("discord", "discord.py"),
+        ("nostr_sdk", "nostr-sdk (Nostr)"),
     ]
     
     for module, name in required_packages:

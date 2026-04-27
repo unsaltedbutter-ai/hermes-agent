@@ -30,6 +30,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
+| Nostr | — | — | — | — | — | — | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 
@@ -57,6 +58,7 @@ flowchart TB
     wcb[WeCom Callback]
     wx[Weixin]
     bb[BlueBubbles]
+    ns[Nostr]
     qq[QQ]
     yb[Yuanbao]
             api["API Server<br/>(OpenAI-compatible)"]
@@ -84,6 +86,7 @@ flowchart TB
     wcb --> store
     wx --> store
     bb --> store
+    ns --> store
     qq --> store
     yb --> store
     api --> store
@@ -388,6 +391,7 @@ Each platform has its own toolset:
 | WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
 | Weixin | `hermes-weixin` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
+| Nostr | `hermes-nostr` | Full tools including terminal |
 | QQBot | `hermes-qqbot` | Full tools including terminal |
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
 | API Server | `hermes` (default) | Full tools including terminal |
@@ -411,6 +415,7 @@ Each platform has its own toolset:
 - [WeCom Callback Setup](wecom-callback.md)
 - [Weixin Setup (WeChat)](weixin.md)
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
+- [Nostr Setup](nostr.md)
 - [QQBot Setup](qqbot.md)
 - [Yuanbao Setup](yuanbao.md)
 - [Open WebUI + API Server](open-webui.md)

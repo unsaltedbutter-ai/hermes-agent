@@ -79,6 +79,12 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD", "MATRIX_DM_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
+    "NOSTR_PRIVATE_KEY", "NOSTR_RELAYS",
+    "NOSTR_ALLOWED_NPUBS", "NOSTR_ALLOW_ALL_USERS",
+    "NOSTR_HOME_CHANNEL", "NOSTR_HOME_CHANNEL_NAME",
+    "NOSTR_BOT_NAME", "NOSTR_BOT_ABOUT", "NOSTR_BOT_PICTURE", "NOSTR_BOT_WEBSITE",
+    "NOSTR_NIP05", "NOSTR_LUD16",
+    "NOSTR_EXPIRATION_MINUTES", "NOSTR_LOOKBACK_MINUTES", "NOSTR_SEEN_MAX",
     # Langfuse observability plugin — optional tuning keys + standard SDK vars.
     # Activation is via plugins.enabled (opt-in through `hermes plugins enable
     # observability/langfuse` or `hermes tools → Langfuse`); credentials gate

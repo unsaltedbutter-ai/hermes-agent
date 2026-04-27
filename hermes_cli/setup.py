@@ -2345,6 +2345,322 @@ def _setup_bluebubbles():
     print_info("   Install: https://docs.bluebubbles.app/helper-bundle/installation")
 
 
+def _install_nostr_extra() -> bool:
+    """Ensure nostr-sdk is installed into the running Python's environment.
+
+    `sys.executable` is the hermes venv's Python (the wizard is launched from
+    `<install>/venv/bin/hermes`), so installs land in the venv and bypass
+    PEP 668. We try, in order:
+      1. uv with VIRTUAL_ENV set (matches setup-hermes.sh)
+      2. python -m pip
+      3. python -m ensurepip → python -m pip   (uv-created venvs lack pip)
+    nostr-sdk is a Rust/PyO3 binding distributed as wheels only; if a wheel
+    isn't available for your Python/platform, the install will fail. There is
+    no source-build fallback (no sdist on PyPI). Termux/Android is the main
+    platform without wheels — Nostr is unavailable there.
+    """
+    try:
+        __import__("nostr_sdk")
+        return True
+    except ImportError:
+        pass
+    print_info("Installing nostr-sdk (Nostr protocol library)...")
+    import platform as _platform
+    import subprocess
+    pkg = "nostr-sdk>=0.44.2,<0.45"
+    venv_root = Path(sys.executable).parent.parent
+    env = os.environ.copy()
+    env["VIRTUAL_ENV"] = str(venv_root)
+    env.pop("PYTHONHOME", None)
+
+    errors: list[tuple[str, str]] = []
+
+    def _run(cmd: list[str], label: str) -> bool:
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        if result.returncode == 0:
+            print_success(f"nostr-sdk installed (via {label})")
+            return True
+        combined = (result.stderr or "") + (result.stdout or "")
+        lines = [ln for ln in combined.splitlines() if ln.strip()]
+        snippet = "\n".join(lines[-15:]) or f"exit {result.returncode}"
+        errors.append((label, snippet))
+        return False
+
+    uv_bin = shutil.which("uv")
+
+    if uv_bin and _run([uv_bin, "pip", "install", pkg], "uv"):
+        return True
+    if _run([sys.executable, "-m", "pip", "install", pkg], "pip"):
+        return True
+
+    pip_missing = any("No module named pip" in snip for _, snip in errors)
+    if pip_missing:
+        print_info("Bootstrapping pip into the venv (ensurepip)...")
+        bootstrap = subprocess.run(
+            [sys.executable, "-m", "ensurepip", "--upgrade"],
+            env=env, capture_output=True, text=True,
+        )
+        if bootstrap.returncode == 0:
+            if _run([sys.executable, "-m", "pip", "install", pkg], "pip (after ensurepip)"):
+                return True
+        else:
+            combined = (bootstrap.stderr or "") + (bootstrap.stdout or "")
+            errors.append(("ensurepip", "\n".join(combined.splitlines()[-10:])))
+
+    print_warning("nostr-sdk install failed.")
+    print_info(f"Python: {sys.version.split()[0]} on {_platform.system()} {_platform.machine()}")
+    print_info("Errors from each attempt:")
+    for label, snippet in errors:
+        print_info(f"   ── {label} ──")
+        for ln in snippet.splitlines():
+            print_info(f"      {ln}")
+    print_info("nostr-sdk ships as wheels only (no sdist). If no wheel exists for")
+    print_info("your Python+platform, the Nostr platform isn't supported there.")
+    print_info("Termux/Android is the main known unsupported environment.")
+    print_info("Run manually to retry:")
+    if uv_bin:
+        print_info(f"   VIRTUAL_ENV={venv_root} uv pip install '{pkg}'")
+    print_info(f"   {sys.executable} -m ensurepip --upgrade && {sys.executable} -m pip install '{pkg}'")
+    return False
+
+
+def _derive_nostr_npub(privkey_value: str) -> Optional[str]:
+    """Derive the npub from a privkey (hex or nsec). Returns None on failure."""
+    try:
+        from nostr_sdk import Keys
+        keys = Keys.parse(privkey_value.strip())
+        return keys.public_key().to_bech32()
+    except Exception as exc:
+        print_warning(f"Could not derive npub: {exc}")
+        return None
+
+
+def _normalize_npub_input(entry: str, own_secret_hex: str = "") -> tuple[str, str]:
+    """Validate a pubkey input string and return (status, npub).
+
+    status values:
+        "ok"               — valid public key; second field is its npub form
+        "private_key"      — input is an nsec... bech32 (a private key)
+        "own_private_key"  — input is the bot's own private key (hex form match)
+        "invalid"          — not parseable as a pubkey
+
+    The input value is never returned in error states, so callers can
+    safely print fixed-string errors without echoing secrets to the screen.
+    """
+    e = (entry or "").strip()
+    if not e:
+        return ("invalid", "")
+    if e.lower().startswith("nsec"):
+        return ("private_key", "")
+    from gateway.platforms.nostr import parse_pubkey
+    pk = parse_pubkey(e)
+    if pk is None:
+        return ("invalid", "")
+    if own_secret_hex and pk.to_hex() == own_secret_hex:
+        return ("own_private_key", "")
+    return ("ok", pk.to_bech32())
+
+
+def _setup_nostr():
+    """Configure Nostr NIP-17 DM gateway."""
+    print_header("Nostr (NIP-17 Private DMs)")
+    existing = get_env_value("NOSTR_PRIVATE_KEY")
+    if existing:
+        print_info("Nostr: already configured")
+        if not prompt_yes_no("Reconfigure Nostr?", False):
+            return
+
+    print_info("Connects Hermes to the Nostr decentralized messaging protocol.")
+    print_info("Users send NIP-17 encrypted DMs to the bot's npub from any Nostr client.")
+    print()
+
+    # Install nostr-sdk before key handling so we can derive the npub.
+    have_nostr_sdk = _install_nostr_extra()
+
+    print()
+    print_info("🔑 Bot's Nostr private key")
+    generate_new = prompt_yes_no("Generate a new keypair for the bot?", True)
+    npub: Optional[str] = None
+    if generate_new:
+        if not have_nostr_sdk:
+            print_warning("nostr-sdk is required to generate a keypair — skipping Nostr setup")
+            return
+        from nostr_sdk import Keys
+        keys = Keys.generate()
+        privkey_hex = keys.secret_key().to_hex()
+        npub = keys.public_key().to_bech32()
+        save_env_value("NOSTR_PRIVATE_KEY", privkey_hex)
+        print_success("Generated new keypair using nostr-sdk (OS CSPRNG)")
+    else:
+        if not have_nostr_sdk:
+            print_warning("nostr-sdk is required to validate keys — skipping Nostr setup")
+            return
+        from nostr_sdk import Keys as _Keys
+        privkey_hex = ""
+        for attempt in range(3):
+            entered = prompt("Nostr private key (64-char hex or nsec bech32)", password=True)
+            if not entered:
+                print_warning("Private key is required — skipping Nostr setup")
+                return
+            entered = entered.strip()
+            try:
+                parsed = _Keys.parse(entered)
+            except Exception:
+                print_error("Invalid key — expected nsec1... bech32 or 64-char hex. Try again.")
+                continue
+            privkey_hex = parsed.secret_key().to_hex()
+            npub = parsed.public_key().to_bech32()
+            break
+        else:
+            print_warning("Three invalid attempts — skipping Nostr setup")
+            return
+        save_env_value("NOSTR_PRIVATE_KEY", privkey_hex)
+        print_success("Nostr private key saved")
+
+    if npub:
+        print()
+        print(color("   npub — share this so others can DM the bot:", Colors.YELLOW))
+        print("   " + color(npub, Colors.CYAN, Colors.BOLD))
+        print()
+
+    print()
+    from gateway.platforms.nostr import parse_relay_url
+    valid_relays: list[str] = []
+    for attempt in range(3):
+        relays = prompt(
+            "Relay URLs (comma-separated wss://, press Enter for defaults)",
+            default="wss://relay.damus.io,wss://nos.lol",
+        )
+        if not relays:
+            print_warning("At least one relay is required — skipping Nostr setup")
+            return
+        valid_relays = []
+        rejected: list[str] = []
+        for raw in relays.split(","):
+            canonical = parse_relay_url(raw)
+            if canonical:
+                valid_relays.append(canonical)
+            elif raw.strip():
+                rejected.append(raw.strip())
+        if rejected:
+            print_error(f"Rejected — only wss:// relays are accepted: {', '.join(rejected)}")
+        if valid_relays and not rejected:
+            break
+        print_error("Try again.")
+    else:
+        print_warning("Three invalid attempts — skipping Nostr setup")
+        return
+    save_env_value("NOSTR_RELAYS", ",".join(valid_relays))
+    print_success(f"Nostr relays saved ({len(valid_relays)})")
+
+    print()
+    print_info("🔒 Who can message this bot? (npub or hex pubkey, comma-separated)")
+    print_info("   Leave empty to deny all. Use * for open access.")
+    allowed_value: Optional[str] = None
+    for attempt in range(3):
+        allowed = prompt("NOSTR_ALLOWED_NPUBS")
+        if not allowed:
+            allowed_value = ""
+            break
+        if allowed.strip() == "*":
+            allowed_value = "*"
+            break
+        normalized: list[str] = []
+        had_error = False
+        for raw in allowed.split(","):
+            entry = raw.strip()
+            if not entry:
+                continue
+            status, npub = _normalize_npub_input(entry, privkey_hex)
+            if status == "ok":
+                normalized.append(npub)
+            elif status == "private_key":
+                print_error("Rejected: that looks like a private key (nsec). Pubkeys start with npub1.")
+                had_error = True
+            elif status == "own_private_key":
+                print_error("Rejected: that's the bot's own private key — never paste it as a pubkey.")
+                had_error = True
+            else:
+                print_error("Rejected: invalid pubkey (expected npub1... or 64-char hex).")
+                had_error = True
+        if normalized and not had_error:
+            allowed_value = ",".join(normalized)
+            break
+        print_error("Try again.")
+    else:
+        print_warning("Three invalid attempts — leaving allowlist unset (deny all).")
+        allowed_value = ""
+    if allowed_value:
+        save_env_value("NOSTR_ALLOWED_NPUBS", allowed_value)
+        if allowed_value == "*":
+            print_info("⚠️  Open access — anyone on Nostr can DM the bot!")
+        else:
+            count = allowed_value.count(",") + 1
+            print_success(f"Nostr allowlist configured ({count} npub{'s' if count != 1 else ''})")
+    else:
+        print_info("No npubs set — bot will deny all inbound messages until NOSTR_ALLOWED_NPUBS is configured.")
+
+    print()
+    print_info("👤 Owner npub — where cron job results and notifications are delivered.")
+    _allowed_raw = get_env_value("NOSTR_ALLOWED_NPUBS") or ""
+    _first_allowed = next(
+        (e.strip() for e in _allowed_raw.split(",") if e.strip() and e.strip() != "*"),
+        "",
+    )
+    if _first_allowed:
+        print_info(f"   Press Enter to use {_first_allowed} as the owner.")
+        owner_prompt = "NOSTR_HOME_CHANNEL"
+    else:
+        owner_prompt = "NOSTR_HOME_CHANNEL (leave empty to set later)"
+    for attempt in range(3):
+        home = prompt(owner_prompt, default=_first_allowed)
+        if not home:
+            break
+        status, npub = _normalize_npub_input(home, privkey_hex)
+        if status == "ok":
+            save_env_value("NOSTR_HOME_CHANNEL", npub)
+            break
+        if status == "private_key":
+            print_error("Rejected: that looks like a private key (nsec). Pubkeys start with npub1.")
+        elif status == "own_private_key":
+            print_error("Rejected: that's the bot's own private key — never paste it as a pubkey.")
+        else:
+            print_error("Rejected: invalid pubkey (expected npub1... or 64-char hex).")
+    else:
+        print_warning("Three invalid attempts — leaving owner unset.")
+
+    print()
+    print_info("Optional: Bot display name (shown in Nostr clients as Kind 0 profile)")
+    bot_name = prompt("NOSTR_BOT_NAME (leave empty for npub)")
+    if bot_name:
+        save_env_value("NOSTR_BOT_NAME", bot_name.strip())
+
+    print()
+    print_success("Nostr configured!")
+    print()
+    print_info("Optional settings — set as env vars in ~/.hermes/.env:")
+    print_info("   NOSTR_BOT_ABOUT          — bio shown in your bot's profile")
+    print_info("   NOSTR_BOT_PICTURE        — avatar URL for the bot's profile")
+    print_info("   NOSTR_BOT_WEBSITE        — website URL for the bot's profile")
+    print_info("   NOSTR_NIP05              — verified identity e.g. bot@yourdomain.com")
+    print_info("   NOSTR_LUD16              — Lightning address for zaps e.g. bot@yourdomain.com")
+    print_info("   NOSTR_EXPIRATION_MINUTES — message TTL in minutes (default: 10080 = 7 days)")
+    print_info("   NOSTR_SEEN_MAX           — dedup cache size (default: 1000)")
+    print_info("   NOSTR_LOOKBACK_MINUTES   — relay replay window on connect (default: 2880 = 48h, the NIP-59 minimum)")
+    print()
+    print_info("…or in ~/.hermes/config.yaml under platforms.nostr.extra:")
+    print_info("   platforms:")
+    print_info("     nostr:")
+    print_info("       extra:")
+    print_info("         about: \"An AI assistant powered by Hermes\"")
+    print_info("         picture: \"https://example.com/avatar.png\"")
+    print_info("         website: \"https://example.com\"")
+    print_info("         nip05: \"bot@yourdomain.com\"")
+    print_info("         lud16: \"bot@yourdomain.com\"")
+    print_info("         expiration_minutes: 10080")
+    print_info("         lookback_minutes: 2880")
+
+
 def _setup_qqbot():
     """Configure QQ Bot (Official API v2) via gateway setup."""
     from hermes_cli.gateway import _setup_qqbot as _gateway_setup_qqbot
@@ -2416,6 +2732,7 @@ _GATEWAY_PLATFORMS = [
     ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
     ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
     ("QQ Bot", "QQ_APP_ID", _setup_qqbot),
+    ("Nostr (NIP-17 DMs)", "NOSTR_PRIVATE_KEY", _setup_nostr),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
 ]
 

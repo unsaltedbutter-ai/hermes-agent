@@ -455,6 +455,10 @@ PLATFORM_HINTS = {
         "image and is the WRONG path. Bare Unicode emoji in text is also not a substitute "
         "— when a sticker is the right response, use yb_send_sticker."
     ),
+    "nostr": (
+        "You are communicating via a mobile messaging service. Keep responses concise "
+        "with little to no markdown formatting. Emojis are allowed. Be brief and direct."
+    ),
 }
 
 # ---------------------------------------------------------------------------
