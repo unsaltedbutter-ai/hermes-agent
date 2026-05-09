@@ -166,6 +166,7 @@ gateway/platforms/
 ├── yuanbao.py           # Yuanbao (Tencent) DM/group adapter
 ├── feishu_comment.py    # Feishu document/drive comment-reply handler
 ├── msgraph_webhook.py   # Microsoft Graph change-notification webhook (Teams, Outlook, etc.)
+├── nostr.py             # Nostr NIP-17 encrypted DMs via relay WebSockets
 ├── webhook.py           # Inbound/outbound webhook adapter
 ├── api_server.py        # REST API server adapter
 └── homeassistant.py     # Home Assistant conversation integration

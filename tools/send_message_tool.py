@@ -509,6 +509,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _EMAIL_TARGET_RE.fullmatch(target_ref)
         if match:
             return target_ref.strip(), None, True
+    if platform_name == "nostr":
+        s = target_ref.strip()
+        if s:
+            return s, None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -910,6 +914,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
+        elif platform == Platform.NOSTR:
+            result = await _send_nostr(pconfig, chat_id, chunk)
         else:
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
@@ -1882,6 +1888,39 @@ async def _send_yuanbao(chat_id, message, media_files=None):
         return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
     except Exception as e:
         return _error(f"Yuanbao send failed: {e}")
+
+
+async def _send_nostr(pconfig, chat_id: str, message: str):
+    """Send a NIP-17 DM via Nostr. Requires the gateway to be running."""
+    try:
+        from gateway.platforms.nostr import NostrAdapter
+    except ImportError:
+        return _error("Nostr adapter module not available.")
+
+    # Re-use the running adapter from the gateway process if available
+    adapter = getattr(NostrAdapter, "_active_instance", None)
+    if adapter is None:
+        # Standalone send: instantiate a short-lived adapter for one message
+        try:
+            from gateway.platforms.nostr import check_nostr_requirements
+            if not check_nostr_requirements():
+                return _error("Nostr dependencies not installed. Run: pip install 'hermes-agent[nostr]'")
+            adapter = NostrAdapter(pconfig)
+            connected = await adapter.connect()
+            if not connected:
+                return _error("Nostr: failed to connect to relays for standalone send")
+            result = await adapter.send(chat_id, message)
+            await adapter.disconnect()
+            if result.success:
+                return {"success": True, "message_id": result.message_id}
+            return _error(f"Nostr send failed: {result.error}")
+        except Exception as e:
+            return _error(f"Nostr standalone send failed: {e}")
+
+    result = await adapter.send(chat_id, message)
+    if result.success:
+        return {"success": True, "message_id": result.message_id}
+    return _error(f"Nostr send failed: {result.error}")
 
 
 # --- Registry ---

@@ -17,6 +17,9 @@ from .base import BasePlatformAdapter, MessageEvent, SendResult
 # pulled in qqbot's chunked-upload + keyboards + onboard machinery and
 # yuanbao's websocket stack — about 48 ms wall and ~8 MB RSS on every
 # CLI invocation, even ones that never touch a gateway adapter.
+# NostrAdapter follows the same pattern: importing it pulls in nostr_sdk
+# (a Rust extension with secp256k1 + relay client + NIP-17 wrap/unwrap),
+# which is pure overhead for any CLI run that isn't serving Nostr DMs.
 #
 # Use PEP 562 module ``__getattr__`` to keep the public re-export working
 # while deferring the actual import to first attribute access. This is
@@ -26,12 +29,16 @@ __all__ = [
     "BasePlatformAdapter",
     "MessageEvent",
     "SendResult",
+    "NostrAdapter",
     "QQAdapter",
     "YuanbaoAdapter",
 ]
 
 
 def __getattr__(name):
+    if name == "NostrAdapter":
+        from .nostr import NostrAdapter  # noqa: F401
+        return NostrAdapter
     if name == "QQAdapter":
         from .qqbot import QQAdapter  # noqa: F401
         return QQAdapter

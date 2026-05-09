@@ -1267,6 +1267,9 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
+from gateway.nostr_identity import (
+    expand_nostr_aliases as _expand_nostr_auth_aliases,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -6321,6 +6324,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("Yuanbao: websockets not installed. Run: pip install websockets")
                 return None
             return YuanbaoAdapter(config)
+
+        elif platform == Platform.NOSTR:
+            from gateway.platforms.nostr import NostrAdapter, check_nostr_requirements
+            if not check_nostr_requirements():
+                logger.warning("Nostr: missing dependencies. Run: pip install 'hermes-agent[nostr]'")
+                return None
+            return NostrAdapter(config)
 
         return None
 

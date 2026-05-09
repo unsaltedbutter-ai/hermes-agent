@@ -390,6 +390,15 @@ def build_session_context_prompt(
             "Use target='yuanbao:direct:<account_id>' for DM "
             "and target='yuanbao:group:<group_code>' for group chat."
         )
+    elif context.source.platform == Platform.NOSTR:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are responding via Nostr (NIP-17 encrypted DMs). "
+            "Recipients are identified by their hex pubkey or npub. "
+            "Messages are end-to-end encrypted and cryptographically signed. "
+            "Text only — no groups, no threads, no media uploads. "
+            "Use target='nostr:<hex_pubkey_or_npub>' to send a DM."
+        )
 
     # Connected platforms
     platforms_list = ["local (files on this machine)"]

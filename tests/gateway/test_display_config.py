@@ -204,7 +204,7 @@ class TestPlatformDefaults:
         """Signal, BlueBubbles, etc. default to 'off' tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud"):
+        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud", "nostr"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
     def test_whatsapp_cloud_locked_to_low_tier_until_edit_message_lands(self):
