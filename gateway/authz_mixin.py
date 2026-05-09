@@ -26,6 +26,9 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
+from gateway.nostr_identity import (
+    expand_nostr_aliases as _expand_nostr_auth_aliases,
+)
 
 
 class GatewayAuthorizationMixin:
@@ -243,6 +246,7 @@ class GatewayAuthorizationMixin:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+            Platform.NOSTR: "NOSTR_ALLOWED_NPUBS",
         }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -270,6 +274,7 @@ class GatewayAuthorizationMixin:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+            Platform.NOSTR: "NOSTR_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         platform_allow_bots_map = {
@@ -435,6 +440,15 @@ class GatewayAuthorizationMixin:
             if normalized_user_id:
                 check_ids.add(normalized_user_id)
 
+        # Nostr: accept npub/hex aliases on both sides of the comparison
+        if source.platform == Platform.NOSTR:
+            expanded = set()
+            for allowed_id in allowed_ids:
+                expanded.update(_expand_nostr_auth_aliases(allowed_id))
+            if expanded:
+                allowed_ids = expanded
+            check_ids.update(_expand_nostr_auth_aliases(user_id))
+
         # SimpleX: SIMPLEX_ALLOWED_USERS accepts either the numeric contactId
         # or the contact's display name. The adapter sets user_id=contactId for
         # stability across renames, but the SimpleX UI never surfaces the
@@ -458,13 +472,14 @@ class GatewayAuthorizationMixin:
         Resolution order:
         1. Explicit per-platform ``unauthorized_dm_behavior`` in config — always wins.
         2. Explicit global ``unauthorized_dm_behavior`` in config — wins when no per-platform.
-        3. When an allowlist (``PLATFORM_ALLOWED_USERS``,
+        3. Nostr always defaults to ``"ignore"``.
+        4. When an allowlist (``PLATFORM_ALLOWED_USERS``,
            ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
            or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
            the allowlist signals that the owner has deliberately restricted
            access; spamming unknown contacts with pairing codes is both noisy
            and a potential info-leak. (#9337)
-        4. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
+        5. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
         """
         config = getattr(self, "config", None)
 
@@ -493,6 +508,9 @@ class GatewayAuthorizationMixin:
                     return "pair"
                 if dm_policy in {"allowlist", "disabled"}:
                     return "ignore"
+
+        if platform == Platform.NOSTR:
+            return "ignore"
 
         # No explicit override.  Fall back to allowlist-aware default:
         # if any allowlist is configured for this platform, silently drop

@@ -726,6 +726,10 @@ PLATFORM_HINTS = {
         "![alt](/path) for local files; local paths are not served that way. "
         "Use MEDIA:/absolute/path instead."
     ),
+    "nostr": (
+        "You are communicating via a mobile messaging service. Keep responses concise "
+        "with little to no markdown formatting. Emojis are allowed. Be brief and direct."
+    ),
 }
 
 # ---------------------------------------------------------------------------

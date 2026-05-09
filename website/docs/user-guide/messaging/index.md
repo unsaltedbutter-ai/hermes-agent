@@ -35,6 +35,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 | WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
+| Nostr | — | — | — | — | — | — | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
@@ -67,6 +68,7 @@ flowchart TB
     wcb[WeCom Callback]
     wx[Weixin]
     bb[BlueBubbles]
+    ns[Nostr]
     qq[QQ]
     yb[Yuanbao]
     ms[Microsoft Teams]
@@ -96,6 +98,7 @@ flowchart TB
     wcb --> store
     wx --> store
     bb --> store
+    ns --> store
     qq --> store
     yb --> store
     ms --> store
@@ -507,6 +510,7 @@ Each platform has its own toolset:
 | WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
 | Weixin | `hermes-weixin` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
+| Nostr | `hermes-nostr` | Full tools including terminal |
 | QQBot | `hermes-qqbot` | Full tools including terminal |
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
@@ -636,6 +640,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [WeCom Callback Setup](wecom-callback.md)
 - [Weixin Setup (WeChat)](weixin.md)
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
+- [Nostr Setup](nostr.md)
 - [QQBot Setup](qqbot.md)
 - [Yuanbao Setup](yuanbao.md)
 - [Microsoft Teams Setup](teams.md)

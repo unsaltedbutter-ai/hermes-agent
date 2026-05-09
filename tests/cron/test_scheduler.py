@@ -397,6 +397,29 @@ class TestResolveDeliveryTarget:
 
         assert _resolve_delivery_targets({"deliver": []}) == []
 
+    def test_bare_nostr_platform_falls_back_to_home_channel(self, monkeypatch):
+        monkeypatch.setenv("NOSTR_HOME_CHANNEL", "npub1home")
+        job = {
+            "deliver": "nostr",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "abc",
+            },
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "nostr",
+            "chat_id": "npub1home",
+            "thread_id": None,
+        }
+
+    def test_explicit_nostr_target_with_pubkey(self):
+        job = {"deliver": "nostr:npub1friend"}
+        assert _resolve_delivery_target(job) == {
+            "platform": "nostr",
+            "chat_id": "npub1friend",
+            "thread_id": None,
+        }
+
 
 class TestRoutingIntents:
     """``all`` routing intent expands at fire time."""

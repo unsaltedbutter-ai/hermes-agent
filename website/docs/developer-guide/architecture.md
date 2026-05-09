@@ -117,11 +117,11 @@ hermes-agent/
 │   ├── mirror.py             # Cross-session message mirroring
 │   ├── status.py             # Token locks, profile-scoped process tracking
 │   ├── builtin_hooks/        # Extension point for always-registered hooks (none shipped)
-│   └── platforms/            # 20 adapters: telegram, discord, slack, whatsapp,
+│   └── platforms/            # 21 adapters: telegram, discord, slack, whatsapp,
 │                             #   signal, matrix, mattermost, email, sms,
 │                             #   dingtalk, feishu, wecom, wecom_callback, weixin,
 │                             #   bluebubbles, qqbot, homeassistant, webhook, api_server,
-│                             #   yuanbao
+│                             #   yuanbao, nostr
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                     # Scheduler (jobs.py, scheduler.py)
@@ -223,7 +223,7 @@ SQLite-based session storage with FTS5 full-text search. Sessions have lineage t
 
 ### Messaging Gateway
 
-Long-running process with 20 platform adapters, unified session routing, user authorization (allowlists + DM pairing), slash command dispatch, hook system, cron ticking, and background maintenance.
+Long-running process with 21 platform adapters, unified session routing, user authorization (allowlists + DM pairing), slash command dispatch, hook system, cron ticking, and background maintenance.
 
 → [Gateway Internals](./gateway-internals.md)
 
