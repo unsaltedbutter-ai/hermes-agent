@@ -241,6 +241,12 @@ class TestSendMessageTool:
         mirror_mock.assert_not_called()
 
     def test_sends_to_explicit_nostr_target(self):
+        # _parse_target_ref calls nostr_sdk.PublicKey.parse on the recipient, so
+        # the target has to be a real curve-point pubkey. Derive an npub from a
+        # known private key; skip when the SDK is unavailable (the fallback
+        # accepts any string but the assertion below would still hold).
+        nostr_sdk = pytest.importorskip("nostr_sdk")
+        npub_target = nostr_sdk.Keys.parse("d" * 64).public_key().to_bech32()
         nostr_cfg = SimpleNamespace(enabled=True, token="nsec1secret", extra={"relays": ["wss://relay.example"]})
         config = SimpleNamespace(
             platforms={Platform.NOSTR: nostr_cfg},
@@ -256,7 +262,7 @@ class TestSendMessageTool:
                 send_message_tool(
                     {
                         "action": "send",
-                        "target": "nostr:npub1target",
+                        "target": f"nostr:{npub_target}",
                         "message": "hello",
                     }
                 )
@@ -266,14 +272,18 @@ class TestSendMessageTool:
         send_mock.assert_awaited_once_with(
             Platform.NOSTR,
             nostr_cfg,
-            "npub1target",
+            npub_target,
             "hello",
             thread_id=None,
             media_files=[],
+            force_document=False,
         )
-        mirror_mock.assert_called_once_with("nostr", "npub1target", "hello", source_label="cli", thread_id=None, user_id=None)
+        mirror_mock.assert_called_once_with("nostr", npub_target, "hello", source_label="cli", thread_id=None, user_id=None)
 
     def test_sends_to_explicit_nostr_hex_target(self):
+        # See note in test_sends_to_explicit_nostr_target — same SDK validation.
+        nostr_sdk = pytest.importorskip("nostr_sdk")
+        hex_target = nostr_sdk.Keys.parse("d" * 64).public_key().to_hex()
         nostr_cfg = SimpleNamespace(enabled=True, token="nsec1secret", extra={"relays": ["wss://relay.example"]})
         config = SimpleNamespace(
             platforms={Platform.NOSTR: nostr_cfg},
@@ -289,7 +299,7 @@ class TestSendMessageTool:
                 send_message_tool(
                     {
                         "action": "send",
-                        "target": "nostr:abcdef1234",
+                        "target": f"nostr:{hex_target}",
                         "message": "hello",
                     }
                 )
@@ -299,12 +309,13 @@ class TestSendMessageTool:
         send_mock.assert_awaited_once_with(
             Platform.NOSTR,
             nostr_cfg,
-            "abcdef1234",
+            hex_target,
             "hello",
             thread_id=None,
             media_files=[],
+            force_document=False,
         )
-        mirror_mock.assert_called_once_with("nostr", "abcdef1234", "hello", source_label="cli", thread_id=None, user_id=None)
+        mirror_mock.assert_called_once_with("nostr", hex_target, "hello", source_label="cli", thread_id=None, user_id=None)
 
     def test_bare_nostr_target_uses_home_channel(self):
         nostr_cfg = SimpleNamespace(enabled=True, token="nsec1secret", extra={"relays": ["wss://relay.example"]})
@@ -337,6 +348,7 @@ class TestSendMessageTool:
             "hello",
             thread_id=None,
             media_files=[],
+            force_document=False,
         )
         mirror_mock.assert_called_once_with("nostr", "npub1home", "hello", source_label="cli", thread_id=None, user_id=None)
 
