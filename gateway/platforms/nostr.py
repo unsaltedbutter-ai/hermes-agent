@@ -761,6 +761,27 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Nostr has no typing-indicator protocol; this is a no-op."""
 
+    def format_tool_event(
+        self,
+        event: Any,
+        *,
+        mode: str = "all",
+        preview_max_len: int = 40,
+    ) -> Optional[str]:
+        """Drop tool-progress chrome on Nostr (return None).
+
+        The base implementation renders each tool call as an emoji+name+preview
+        string that the gateway then ships as a regular message. Telegram can
+        absorb that into a single edited bubble, but Nostr has no in-place
+        message editing (NIP-09 is event deletion, not editing) — every tool
+        progress event would land as its own NIP-17 gift-wrap published to
+        every relay. A multi-tool turn would flood the recipient.
+
+        Returning None tells the dispatcher to eat the event entirely, so
+        only the final agent response reaches the user.
+        """
+        return None
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {
             "name": chat_id[:16] + "...",
