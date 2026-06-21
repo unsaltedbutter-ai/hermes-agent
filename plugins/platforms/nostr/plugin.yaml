@@ -1,0 +1,73 @@
+name: nostr-platform
+label: Nostr
+kind: platform
+version: 1.0.0
+description: >
+  Nostr gateway adapter for Hermes Agent. Connects over NIP-17 end-to-end
+  encrypted private direct messages (gift wraps) built on nostr-sdk. Publishes
+  a Kind 0 profile and a Kind 10050 DM inbox relay list on connect, supports
+  long-message chunking, NIP-40 expiration, NIP-59 timestamp obfuscation, an
+  npub allowlist, and a self-healing relay watchdog. Plain-text DMs only.
+author: NousResearch
+requires_env:
+  - name: NOSTR_PRIVATE_KEY
+    description: "Bot's Nostr private key (nsec bech32 or 64-char hex). Controls the bot's identity — keep secret."
+    prompt: "Nostr private key (nsec bech32 or 64-char hex)"
+    password: true
+  - name: NOSTR_RELAYS
+    description: "Comma-separated wss:// relay URLs (at least one required)."
+    prompt: "Relay URLs (comma-separated wss://)"
+    password: false
+optional_env:
+  - name: NOSTR_ALLOWED_NPUBS
+    description: "Comma-separated npub/hex pubkeys allowed to DM the bot. '*' = open access; empty = deny all (safest default)."
+    prompt: "Allowed npubs (comma-separated, * for open, empty to deny all)"
+    password: false
+  - name: NOSTR_ALLOW_ALL_USERS
+    description: "Allow any Nostr user to DM the bot (synonym for NOSTR_ALLOWED_NPUBS=*; dev only)."
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: NOSTR_HOME_CHANNEL
+    description: "Owner's npub/hex — default recipient for cron and notification delivery."
+    prompt: "Home channel npub for cron/notifications"
+    password: false
+  - name: NOSTR_HOME_CHANNEL_NAME
+    description: "Display name for the Nostr home channel."
+    prompt: "Home channel display name"
+    password: false
+  - name: NOSTR_BOT_NAME
+    description: "Kind 0 profile display name (defaults to the bot's npub)."
+    prompt: "Bot display name"
+    password: false
+  - name: NOSTR_BOT_ABOUT
+    description: "Kind 0 profile bio/about text."
+    prompt: "Bot about/bio"
+    password: false
+  - name: NOSTR_BOT_PICTURE
+    description: "Kind 0 profile avatar URL (http/https)."
+    prompt: "Bot avatar URL"
+    password: false
+  - name: NOSTR_BOT_WEBSITE
+    description: "NIP-24 website URL for the bot's profile."
+    prompt: "Bot website URL"
+    password: false
+  - name: NOSTR_NIP05
+    description: "NIP-05 verified identifier, e.g. bot@yourdomain.com (requires .well-known/nostr.json)."
+    prompt: "NIP-05 identifier"
+    password: false
+  - name: NOSTR_LUD16
+    description: "LUD-16 Lightning address for zaps, e.g. bot@yourdomain.com."
+    prompt: "Lightning address (LUD-16)"
+    password: false
+  - name: NOSTR_EXPIRATION_MINUTES
+    description: "NIP-40 TTL for outbound DMs in minutes (default 10080 = 7 days)."
+    prompt: "Outbound DM expiration (minutes)"
+    password: false
+  - name: NOSTR_SEEN_MAX
+    description: "Dedup cache size for processed gift-wrap event IDs (default 1000)."
+    prompt: "Dedup cache size"
+    password: false
+  - name: NOSTR_LOOKBACK_MINUTES
+    description: "Relay replay window on connect/resubscribe (default 2880 = 48h, the NIP-59 minimum)."
+    prompt: "Subscription lookback (minutes)"
+    password: false

@@ -59,6 +59,15 @@ except ImportError:  # pragma: no cover
     HandleNotification = object  # type: ignore[assignment,misc]
 
 from gateway.config import Platform, PlatformConfig
+
+# Register the dynamic ``nostr`` enum member at import time.  The enum's
+# ``_missing_`` hook caches the pseudo-member in both ``_value2member_map_``
+# and ``_member_map_``, so after this call ``Platform.NOSTR`` resolves via
+# attribute access too.  As a bundled plugin under ``plugins/platforms/nostr/``
+# nostr no longer has a hardcoded ``Platform`` enum member — it earns the
+# attribute by asking for it once (mirrors plugins/platforms/google_chat/).
+Platform("nostr")
+
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -66,7 +75,10 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-logger = logging.getLogger(__name__)
+# Pin the logger name to the legacy module path so operator log filters, grep
+# aliases, and the gateway's bundled log views keep matching after the in-tree
+# → plugin migration (``__name__`` becomes the plugin loader namespace).
+logger = logging.getLogger("gateway.platforms.nostr")
 
 
 # ---------------------------------------------------------------------------
@@ -190,28 +202,34 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
     def __init__(self, config: PlatformConfig) -> None:
         super().__init__(config, Platform.NOSTR)
 
-        if not _NOSTR_SDK_AVAILABLE:
-            raise ImportError(
-                "nostr-sdk is required. Install with: pip install 'hermes-agent[nostr]'"
-            )
+        # Private key & derived pubkey (Keys.parse accepts nsec or hex).
+        # As a plugin the adapter is constructed leniently — the registry's
+        # conformance probe and env-only setups may build it before config is
+        # populated — so we do NOT raise on a missing/invalid key or absent SDK
+        # here; connect() performs deferred validation and fails cleanly. The
+        # env fallback mirrors MatrixAdapter: the generic plugin-enable loop in
+        # gateway/config.py seeds extra/home_channel but not ``token``.
+        raw_key = (config.token or os.getenv("NOSTR_PRIVATE_KEY", "") or "").strip()
+        self._keys: Optional["Keys"] = None
+        self._signer: Optional["NostrSigner"] = None
+        self._pubkey_hex: str = ""
+        self._npub: str = ""
+        if raw_key and _NOSTR_SDK_AVAILABLE:
+            try:
+                self._keys = Keys.parse(raw_key)
+                self._signer = NostrSigner.keys(self._keys)
+                self._pubkey_hex = self._keys.public_key().to_hex()
+                self._npub = self._keys.public_key().to_bech32()
+            except Exception:
+                logger.warning(
+                    "Nostr: could not parse NOSTR_PRIVATE_KEY — expected an "
+                    "nsec1... bech32 string or 64-char hex; connect() will fail"
+                )
 
-        # Private key & derived pubkey (Keys.parse accepts nsec or hex)
-        raw_key = (config.token or "").strip()
-        if not raw_key:
-            raise ValueError("Nostr: NOSTR_PRIVATE_KEY is required")
-        try:
-            self._keys: Keys = Keys.parse(raw_key)
-        except Exception as exc:
-            raise ValueError(
-                "Nostr: could not parse NOSTR_PRIVATE_KEY — expected an "
-                "nsec1... bech32 string or 64-char hex"
-            ) from exc
-        self._signer: NostrSigner = NostrSigner.keys(self._keys)
-        self._pubkey_hex: str = self._keys.public_key().to_hex()
-        self._npub: str = self._keys.public_key().to_bech32()
-
-        # Relay list (≥1 required; only wss:// accepted)
-        relay_str = config.extra.get("relays", "")
+        # Relay list (≥1 required; only wss:// accepted). Env fallback mirrors
+        # the key handling above; connect() enforces the ≥1 requirement so a
+        # leniently-constructed adapter doesn't raise at build time.
+        relay_str = config.extra.get("relays") or os.getenv("NOSTR_RELAYS", "") or ""
         self._relay_urls: List[str] = []
         for raw in relay_str.split(","):
             canonical = parse_relay_url(raw)
@@ -219,8 +237,6 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
                 self._relay_urls.append(canonical)
             elif raw.strip():
                 logger.warning("Nostr: relay %r rejected — only wss:// is supported", raw.strip())
-        if not self._relay_urls:
-            raise ValueError("Nostr: NOSTR_RELAYS must contain at least one wss:// URL")
 
         self._bot_name: str = config.extra.get("name") or self._npub
         self._bot_about: str = config.extra.get("about", "")
@@ -345,6 +361,31 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
+        # Deferred validation: __init__ is lenient (so the plugin registry and
+        # env-only setups can construct the adapter); connect() is where missing
+        # prerequisites become a clean, non-retryable failure.
+        if not _NOSTR_SDK_AVAILABLE:
+            self._set_fatal_error(
+                "nostr_missing_dependency",
+                "Nostr: nostr-sdk not installed. Run: pip install 'hermes-agent[nostr]'",
+                retryable=False,
+            )
+            return False
+        if self._keys is None:
+            self._set_fatal_error(
+                "nostr_missing_credentials",
+                "Nostr: NOSTR_PRIVATE_KEY is required (nsec bech32 or 64-char hex)",
+                retryable=False,
+            )
+            return False
+        if not self._relay_urls:
+            self._set_fatal_error(
+                "nostr_missing_relays",
+                "Nostr: NOSTR_RELAYS must contain at least one wss:// URL",
+                retryable=False,
+            )
+            return False
+
         # Guard against two gateway instances driving the same Nostr identity:
         # that would double-process inbound gift wraps, double-send outbound
         # DMs, and corrupt the pubkey-scoped dedup file (non-atomic writes from
@@ -880,3 +921,454 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
             tmp.replace(path)
         except Exception as exc:
             logger.warning("Nostr: could not save seen IDs: %s", exc)
+
+
+# ===========================================================================
+# Plugin registration surface
+# ===========================================================================
+# Everything below replaces the per-platform touchpoints nostr used to carry in
+# core (gateway/config.py enum+checker+env block, gateway/run.py adapter
+# factory, tools/send_message_tool.py _send_nostr, hermes_cli/setup.py
+# _setup_nostr, toolsets/status/scheduler entries).  The gateway discovers it
+# all via the platform registry — see plugins/platforms/google_chat/ for the
+# reference pattern. #41112.
+
+
+def _build_adapter(config: PlatformConfig) -> "NostrAdapter":
+    """Factory: construct a NostrAdapter from a PlatformConfig.
+
+    __init__ is lenient (does not raise on missing key/relays/SDK) so this is
+    safe to call with the registry's synthetic conformance config; connect()
+    performs the real validation.
+    """
+    return NostrAdapter(config)
+
+
+def _is_connected(config) -> bool:
+    """True when a private key + ≥1 relay are configured.
+
+    Reads via ``hermes_cli.gateway.get_env_value`` so setup-status callers that
+    patch get_env_value observe the same value, and ``PlatformConfig`` extras
+    (relays, seeded by ``_env_enablement``) are honored too. Replaces the legacy
+    ``_PLATFORM_CONNECTED_CHECKERS[Platform.NOSTR]`` entry. #41112.
+    """
+    extra = getattr(config, "extra", {}) or {}
+    import hermes_cli.gateway as gateway_mod
+    key = getattr(config, "token", None) or gateway_mod.get_env_value("NOSTR_PRIVATE_KEY") or ""
+    relays = extra.get("relays") or gateway_mod.get_env_value("NOSTR_RELAYS") or ""
+    return bool(str(key).strip() and str(relays).strip())
+
+
+def _env_enablement() -> Optional[Dict[str, Any]]:
+    """Seed ``PlatformConfig.extra`` (+ home_channel) from NOSTR_* env vars.
+
+    Called by the core env-populator (gateway/config.py) BEFORE the adapter is
+    constructed, so ``gateway status`` / ``get_connected_platforms()`` reflect
+    env-only configuration. Returns ``None`` when the required key + relays
+    aren't set, so the caller skips auto-enabling. Replaces the legacy nostr
+    block in ``_apply_env_overrides``. The ``token`` (private key) is NOT
+    returned here — the core loop only merges into ``extra``; the adapter reads
+    the key via its ``config.token or os.getenv("NOSTR_PRIVATE_KEY")`` fallback.
+    """
+    privkey = os.getenv("NOSTR_PRIVATE_KEY")
+    relays = os.getenv("NOSTR_RELAYS")
+    if not (privkey and relays):
+        return None
+    seed: Dict[str, Any] = {"relays": relays}
+    for env_key, extra_key in (
+        ("NOSTR_BOT_NAME", "name"),
+        ("NOSTR_BOT_ABOUT", "about"),
+        ("NOSTR_BOT_PICTURE", "picture"),
+        ("NOSTR_NIP05", "nip05"),
+        ("NOSTR_LUD16", "lud16"),
+        ("NOSTR_BOT_WEBSITE", "website"),
+        ("NOSTR_EXPIRATION_MINUTES", "expiration_minutes"),
+        ("NOSTR_LOOKBACK_MINUTES", "lookback_minutes"),
+    ):
+        val = os.getenv(env_key, "").strip()
+        if val:
+            seed[extra_key] = val
+    home = os.getenv("NOSTR_HOME_CHANNEL")
+    if home:
+        pk = parse_pubkey(home)
+        if pk is not None:
+            seed["home_channel"] = {
+                "chat_id": pk.to_hex(),
+                "name": os.getenv("NOSTR_HOME_CHANNEL_NAME", "Owner"),
+            }
+        else:
+            logger.warning(
+                "Nostr: NOSTR_HOME_CHANNEL is not a valid npub or hex pubkey — ignoring"
+            )
+    return seed
+
+
+def _apply_yaml_config(yaml_cfg: dict, nostr_cfg: dict) -> Optional[dict]:
+    """Translate ``config.yaml`` nostr: keys into NOSTR_* env vars
+    (apply_yaml_config_fn contract). Env vars take precedence. Nostr is DM-only
+    (NIP-17); the only allowlist is ``allow_from`` → ``NOSTR_ALLOWED_NPUBS`` (the
+    npub allowlist the authz layer reads; ``*`` = allow all). Mirrors the legacy
+    nostr YAML bridge removed from gateway/config.py. Returns None — everything
+    flows through env.
+    """
+    af = nostr_cfg.get("allow_from")
+    if af is not None and not os.getenv("NOSTR_ALLOWED_NPUBS"):
+        if isinstance(af, list):
+            af = ",".join(str(v) for v in af)
+        os.environ["NOSTR_ALLOWED_NPUBS"] = str(af)
+    return None
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Out-of-process Nostr delivery (standalone_sender_fn contract).
+
+    Reuses the gateway's connected adapter when present (avoids republishing
+    profile/relay-list metadata on every send); otherwise spins up a
+    short-lived adapter for one message. Replaces the legacy ``_send_nostr`` in
+    tools/send_message_tool.py.
+    """
+    if not check_nostr_requirements():
+        return {"error": "Nostr dependencies not installed. Run: pip install 'hermes-agent[nostr]'"}
+
+    adapter = NostrAdapter.get_active()
+    if adapter is not None:
+        result = await adapter.send(chat_id, message)
+        if result.success:
+            return {"success": True, "platform": "nostr", "chat_id": chat_id, "message_id": result.message_id}
+        return {"error": f"Nostr send failed: {result.error}"}
+
+    # Standalone: instantiate a short-lived adapter for one message.
+    try:
+        adapter = NostrAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return {"error": "Nostr: failed to connect to relays for standalone send"}
+        try:
+            result = await adapter.send(chat_id, message)
+        finally:
+            await adapter.disconnect()
+        if result.success:
+            return {"success": True, "platform": "nostr", "chat_id": chat_id, "message_id": result.message_id}
+        return {"error": f"Nostr send failed: {result.error}"}
+    except Exception as e:
+        return {"error": f"Nostr standalone send failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# Interactive setup (moved from hermes_cli/setup.py::_setup_nostr)
+# ---------------------------------------------------------------------------
+
+def _install_nostr_extra() -> bool:
+    """Ensure nostr-sdk is installed into the running Python's environment.
+
+    nostr-sdk is a Rust/PyO3 binding distributed as wheels only (no sdist); if
+    no wheel exists for the current Python/platform the install fails (Termux/
+    Android is the main unsupported environment). Tries uv, then pip, then
+    ensurepip→pip for uv-created venvs that lack pip.
+    """
+    from hermes_cli.cli_output import print_info, print_success, print_warning
+    try:
+        __import__("nostr_sdk")
+        return True
+    except ImportError:
+        pass
+    print_info("Installing nostr-sdk (Nostr protocol library)...")
+    import sys as _sys
+    import shutil as _shutil
+    import subprocess
+    import platform as _platform
+    pkg = "nostr-sdk>=0.44.2,<0.45"
+    venv_root = Path(_sys.executable).parent.parent
+    env = os.environ.copy()
+    env["VIRTUAL_ENV"] = str(venv_root)
+    env.pop("PYTHONHOME", None)
+
+    errors: list = []
+
+    def _run(cmd: list, label: str) -> bool:
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        if result.returncode == 0:
+            print_success(f"nostr-sdk installed (via {label})")
+            return True
+        combined = (result.stderr or "") + (result.stdout or "")
+        lines = [ln for ln in combined.splitlines() if ln.strip()]
+        errors.append((label, "\n".join(lines[-15:]) or f"exit {result.returncode}"))
+        return False
+
+    uv_bin = _shutil.which("uv")
+    if uv_bin and _run([uv_bin, "pip", "install", pkg], "uv"):
+        return True
+    if _run([_sys.executable, "-m", "pip", "install", pkg], "pip"):
+        return True
+    if any("No module named pip" in snip for _, snip in errors):
+        print_info("Bootstrapping pip into the venv (ensurepip)...")
+        bootstrap = subprocess.run(
+            [_sys.executable, "-m", "ensurepip", "--upgrade"],
+            env=env, capture_output=True, text=True,
+        )
+        if bootstrap.returncode == 0 and _run(
+            [_sys.executable, "-m", "pip", "install", pkg], "pip (after ensurepip)"
+        ):
+            return True
+
+    print_warning("nostr-sdk install failed.")
+    print_info(f"Python: {_sys.version.split()[0]} on {_platform.system()} {_platform.machine()}")
+    for label, snippet in errors:
+        print_info(f"   ── {label} ──")
+        for ln in snippet.splitlines():
+            print_info(f"      {ln}")
+    print_info("nostr-sdk ships as wheels only (no sdist). If no wheel exists for")
+    print_info("your Python+platform, the Nostr platform isn't supported there.")
+    return False
+
+
+def _normalize_npub_input(entry: str, own_secret_hex: str = "") -> tuple:
+    """Validate a pubkey input and return (status, npub).
+
+    status: "ok" (npub in field 2), "private_key" (nsec), "own_private_key"
+    (bot's own key), "invalid". The input value is never echoed in error states.
+    """
+    e = (entry or "").strip()
+    if not e:
+        return ("invalid", "")
+    if e.lower().startswith("nsec"):
+        return ("private_key", "")
+    pk = parse_pubkey(e)
+    if pk is None:
+        return ("invalid", "")
+    if own_secret_hex and pk.to_hex() == own_secret_hex:
+        return ("own_private_key", "")
+    return ("ok", pk.to_bech32())
+
+
+def interactive_setup() -> None:
+    """Configure the Nostr NIP-17 DM gateway via ``hermes setup``.
+
+    Replaces hermes_cli/setup.py::_setup_nostr and the static
+    _PLATFORMS["nostr"] dict; wired via the registry's ``setup_fn``. CLI helpers
+    are lazy-imported to keep plugin import cheap.
+    """
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.colors import Colors, color
+    from hermes_cli.cli_output import (
+        prompt,
+        prompt_yes_no,
+        print_header,
+        print_info,
+        print_success,
+        print_warning,
+        print_error,
+    )
+
+    print_header("Nostr (NIP-17 Private DMs)")
+    if get_env_value("NOSTR_PRIVATE_KEY"):
+        print_info("Nostr: already configured")
+        if not prompt_yes_no("Reconfigure Nostr?", False):
+            return
+
+    print_info("Connects Hermes to the Nostr decentralized messaging protocol.")
+    print_info("Users send NIP-17 encrypted DMs to the bot's npub from any Nostr client.")
+    print()
+
+    have_nostr_sdk = _install_nostr_extra()
+
+    print()
+    print_info("🔑 Bot's Nostr private key")
+    npub: Optional[str] = None
+    if prompt_yes_no("Generate a new keypair for the bot?", True):
+        if not have_nostr_sdk:
+            print_warning("nostr-sdk is required to generate a keypair — skipping Nostr setup")
+            return
+        from nostr_sdk import Keys
+        keys = Keys.generate()
+        privkey_hex = keys.secret_key().to_hex()
+        npub = keys.public_key().to_bech32()
+        save_env_value("NOSTR_PRIVATE_KEY", privkey_hex)
+        print_success("Generated new keypair using nostr-sdk (OS CSPRNG)")
+    else:
+        if not have_nostr_sdk:
+            print_warning("nostr-sdk is required to validate keys — skipping Nostr setup")
+            return
+        from nostr_sdk import Keys as _Keys
+        privkey_hex = ""
+        for _ in range(3):
+            entered = prompt("Nostr private key (64-char hex or nsec bech32)", password=True)
+            if not entered:
+                print_warning("Private key is required — skipping Nostr setup")
+                return
+            try:
+                parsed = _Keys.parse(entered.strip())
+            except Exception:
+                print_error("Invalid key — expected nsec1... bech32 or 64-char hex. Try again.")
+                continue
+            privkey_hex = parsed.secret_key().to_hex()
+            npub = parsed.public_key().to_bech32()
+            break
+        else:
+            print_warning("Three invalid attempts — skipping Nostr setup")
+            return
+        save_env_value("NOSTR_PRIVATE_KEY", privkey_hex)
+        print_success("Nostr private key saved")
+
+    if npub:
+        print()
+        print(color("   npub — share this so others can DM the bot:", Colors.YELLOW))
+        print("   " + color(npub, Colors.CYAN, Colors.BOLD))
+        print()
+
+    print()
+    valid_relays: list = []
+    for _ in range(3):
+        relays = prompt(
+            "Relay URLs (comma-separated wss://, press Enter for defaults)",
+            default="wss://relay.damus.io,wss://nos.lol",
+        )
+        if not relays:
+            print_warning("At least one relay is required — skipping Nostr setup")
+            return
+        valid_relays, rejected = [], []
+        for raw in relays.split(","):
+            canonical = parse_relay_url(raw)
+            if canonical:
+                valid_relays.append(canonical)
+            elif raw.strip():
+                rejected.append(raw.strip())
+        if rejected:
+            print_error(f"Rejected — only wss:// relays are accepted: {', '.join(rejected)}")
+        if valid_relays and not rejected:
+            break
+        print_error("Try again.")
+    else:
+        print_warning("Three invalid attempts — skipping Nostr setup")
+        return
+    save_env_value("NOSTR_RELAYS", ",".join(valid_relays))
+    print_success(f"Nostr relays saved ({len(valid_relays)})")
+
+    print()
+    print_info("🔒 Who can message this bot? (npub or hex pubkey, comma-separated)")
+    print_info("   Leave empty to deny all. Use * for open access.")
+    allowed_value: Optional[str] = None
+    for _ in range(3):
+        allowed = prompt("NOSTR_ALLOWED_NPUBS")
+        if not allowed:
+            allowed_value = ""
+            break
+        if allowed.strip() == "*":
+            allowed_value = "*"
+            break
+        normalized, had_error = [], False
+        for raw in allowed.split(","):
+            entry = raw.strip()
+            if not entry:
+                continue
+            status, npub_form = _normalize_npub_input(entry, privkey_hex)
+            if status == "ok":
+                normalized.append(npub_form)
+            elif status == "private_key":
+                print_error("Rejected: that looks like a private key (nsec). Pubkeys start with npub1.")
+                had_error = True
+            elif status == "own_private_key":
+                print_error("Rejected: that's the bot's own private key — never paste it as a pubkey.")
+                had_error = True
+            else:
+                print_error("Rejected: invalid pubkey (expected npub1... or 64-char hex).")
+                had_error = True
+        if normalized and not had_error:
+            allowed_value = ",".join(normalized)
+            break
+        print_error("Try again.")
+    else:
+        print_warning("Three invalid attempts — leaving allowlist unset (deny all).")
+        allowed_value = ""
+    if allowed_value:
+        save_env_value("NOSTR_ALLOWED_NPUBS", allowed_value)
+        if allowed_value == "*":
+            print_info("⚠️  Open access — anyone on Nostr can DM the bot!")
+        else:
+            count = allowed_value.count(",") + 1
+            print_success(f"Nostr allowlist configured ({count} npub{'s' if count != 1 else ''})")
+    else:
+        print_info("No npubs set — bot will deny all inbound messages until NOSTR_ALLOWED_NPUBS is configured.")
+
+    print()
+    print_info("👤 Owner npub — where cron job results and notifications are delivered.")
+    _allowed_raw = get_env_value("NOSTR_ALLOWED_NPUBS") or ""
+    _first_allowed = next(
+        (e.strip() for e in _allowed_raw.split(",") if e.strip() and e.strip() != "*"),
+        "",
+    )
+    owner_prompt = (
+        "NOSTR_HOME_CHANNEL" if _first_allowed else "NOSTR_HOME_CHANNEL (leave empty to set later)"
+    )
+    if _first_allowed:
+        print_info(f"   Press Enter to use {_first_allowed} as the owner.")
+    for _ in range(3):
+        home = prompt(owner_prompt, default=_first_allowed)
+        if not home:
+            break
+        status, npub_form = _normalize_npub_input(home, privkey_hex)
+        if status == "ok":
+            save_env_value("NOSTR_HOME_CHANNEL", npub_form)
+            break
+        if status == "private_key":
+            print_error("Rejected: that looks like a private key (nsec). Pubkeys start with npub1.")
+        elif status == "own_private_key":
+            print_error("Rejected: that's the bot's own private key — never paste it as a pubkey.")
+        else:
+            print_error("Rejected: invalid pubkey (expected npub1... or 64-char hex).")
+    else:
+        print_warning("Three invalid attempts — leaving owner unset.")
+
+    print()
+    bot_name = prompt("NOSTR_BOT_NAME (leave empty for npub)")
+    if bot_name:
+        save_env_value("NOSTR_BOT_NAME", bot_name.strip())
+
+    print()
+    print_success("Nostr configured!")
+    print_info("Optional env vars: NOSTR_BOT_ABOUT, NOSTR_BOT_PICTURE, NOSTR_BOT_WEBSITE,")
+    print_info("   NOSTR_NIP05, NOSTR_LUD16, NOSTR_EXPIRATION_MINUTES, NOSTR_SEEN_MAX, NOSTR_LOOKBACK_MINUTES")
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system at startup.
+
+    The gateway's adapter creation, env-enablement, cron delivery, send_message
+    routing, authz allowlist, status display, setup wizard, and system-prompt
+    hint all flow from this single registration. #41112.
+    """
+    ctx.register_platform(
+        name="nostr",
+        label="Nostr",
+        adapter_factory=_build_adapter,
+        check_fn=check_nostr_requirements,
+        is_connected=_is_connected,
+        required_env=["NOSTR_PRIVATE_KEY", "NOSTR_RELAYS"],
+        install_hint="pip install 'hermes-agent[nostr]'",
+        setup_fn=interactive_setup,
+        apply_yaml_config_fn=_apply_yaml_config,
+        env_enablement_fn=_env_enablement,
+        cron_deliver_env_var="NOSTR_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,
+        allowed_users_env="NOSTR_ALLOWED_NPUBS",
+        allow_all_env="NOSTR_ALLOW_ALL_USERS",
+        max_message_length=4096,
+        pii_safe=False,
+        emoji="🔑",
+        allow_update_command=True,
+        platform_hint=(
+            "You are on Nostr, communicating via NIP-17 end-to-end-encrypted "
+            "direct messages. Plain text only — no markdown rendering, no "
+            "groups, no threads, and no native media uploads. Keep responses "
+            "concise. Recipients are identified by npub (bech32) or hex pubkey; "
+            "use target='nostr:<npub-or-hex>' to send a DM."
+        ),
+    )

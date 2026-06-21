@@ -7156,12 +7156,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
             return YuanbaoAdapter(config)
 
-        elif platform == Platform.NOSTR:
-            from gateway.platforms.nostr import NostrAdapter, check_nostr_requirements
-            if not check_nostr_requirements():
-                logger.warning("Nostr: missing dependencies. Run: pip install 'hermes-agent[nostr]'")
-                return None
-            return NostrAdapter(config)
+        # Nostr migrated to a bundled plugin (plugins/platforms/nostr/); its
+        # adapter is created via the platform registry, which _create_adapter
+        # consults before this built-in chain. #41112.
 
         return None
 

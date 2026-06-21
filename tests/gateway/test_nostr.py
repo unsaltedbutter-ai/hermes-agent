@@ -48,7 +48,11 @@ class TestNostrEnvConfig:
         assert Platform.NOSTR in cfg.platforms
         pc = cfg.platforms[Platform.NOSTR]
         assert pc.enabled is True
-        assert pc.token == "a" * 64
+        # Post-migration (#41112): the nostr plugin's env_enablement_fn +
+        # is_connected enable the platform and seed extra["relays"]; the private
+        # key is read by the adapter from NOSTR_PRIVATE_KEY at construction
+        # (config.token is NOT populated by the generic plugin-enable loop —
+        # same contract as matrix/whatsapp).
         assert pc.extra["relays"] == "wss://relay.example.com"
 
     def test_missing_relays_does_not_enable(self, monkeypatch):
@@ -136,13 +140,13 @@ class TestAuthMaps:
 )
 class TestProfileValidators:
     def test_local_at_domain_accepts_well_formed(self):
-        from gateway.platforms.nostr import is_valid_local_at_domain
+        from plugins.platforms.nostr.adapter import is_valid_local_at_domain
         assert is_valid_local_at_domain("bot@example.com")
         assert is_valid_local_at_domain("bot.name@sub.example.com")
         assert is_valid_local_at_domain("bot_1-2@example.io")
 
     def test_local_at_domain_rejects_malformed(self):
-        from gateway.platforms.nostr import is_valid_local_at_domain
+        from plugins.platforms.nostr.adapter import is_valid_local_at_domain
         assert not is_valid_local_at_domain("")
         assert not is_valid_local_at_domain("no-at-sign")
         assert not is_valid_local_at_domain("@example.com")
@@ -151,13 +155,13 @@ class TestProfileValidators:
         assert not is_valid_local_at_domain("bot example.com")
 
     def test_http_url_accepts_http_https(self):
-        from gateway.platforms.nostr import is_valid_http_url
+        from plugins.platforms.nostr.adapter import is_valid_http_url
         assert is_valid_http_url("http://example.com")
         assert is_valid_http_url("https://example.com/path?q=1")
         assert is_valid_http_url("https://sub.example.com:8080/p")
 
     def test_http_url_rejects_other_schemes(self):
-        from gateway.platforms.nostr import is_valid_http_url
+        from plugins.platforms.nostr.adapter import is_valid_http_url
         assert not is_valid_http_url("")
         assert not is_valid_http_url("ftp://example.com")
         assert not is_valid_http_url("javascript:alert(1)")
@@ -165,12 +169,12 @@ class TestProfileValidators:
         assert not is_valid_http_url("https://")  # no host
 
     def test_parse_relay_url_canonicalizes_bare_host(self):
-        from gateway.platforms.nostr import parse_relay_url
+        from plugins.platforms.nostr.adapter import parse_relay_url
         assert parse_relay_url("relay.example.com") == "wss://relay.example.com"
         assert parse_relay_url("  wss://relay.example.com  ") == "wss://relay.example.com"
 
     def test_parse_relay_url_rejects_other_schemes(self):
-        from gateway.platforms.nostr import parse_relay_url
+        from plugins.platforms.nostr.adapter import parse_relay_url
         assert parse_relay_url("") is None
         assert parse_relay_url("   ") is None
         assert parse_relay_url("ws://relay.example.com") is None
@@ -178,7 +182,7 @@ class TestProfileValidators:
         assert parse_relay_url("wss://") is None  # scheme but no host
 
     def test_parse_pubkey_accepts_npub_and_hex(self):
-        from gateway.platforms.nostr import parse_pubkey
+        from plugins.platforms.nostr.adapter import parse_pubkey
         # Jack's well-known npub
         npub = "npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m"
         pk = parse_pubkey(npub)
@@ -189,7 +193,7 @@ class TestProfileValidators:
         assert pk.to_hex() == pk2.to_hex()
 
     def test_parse_pubkey_rejects_invalid(self):
-        from gateway.platforms.nostr import parse_pubkey
+        from plugins.platforms.nostr.adapter import parse_pubkey
         assert parse_pubkey("") is None
         assert parse_pubkey("not-a-key") is None
         assert parse_pubkey("npub1invalid") is None
@@ -217,7 +221,7 @@ class TestNostrAdapterInit:
         return config
 
     def test_adapter_init_sets_pubkey(self):
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         from nostr_sdk import Keys
         privkey_hex = "01" * 32
         config = self._make_config(privkey_hex=privkey_hex)
@@ -229,7 +233,7 @@ class TestNostrAdapterInit:
         assert adapter._npub.startswith("npub1")
 
     def test_adapter_init_parses_relay_list(self):
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         config = self._make_config(relays="wss://relay1.example.com,wss://relay2.example.com")
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("NOSTR_ALLOWED_NPUBS", None)
@@ -238,7 +242,7 @@ class TestNostrAdapterInit:
         assert "wss://relay1.example.com" in adapter._relay_urls
 
     def test_adapter_init_rejects_non_wss(self):
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         config = self._make_config(relays="ws://insecure.example.com,wss://ok.example.com")
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("NOSTR_ALLOWED_NPUBS", None)
@@ -247,7 +251,7 @@ class TestNostrAdapterInit:
         assert adapter._relay_urls == ["wss://ok.example.com"]
 
     def test_adapter_init_parses_allowlist(self):
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         pubkey_hex = "ab" * 32
         config = self._make_config()
         with patch.dict(os.environ, {"NOSTR_ALLOWED_NPUBS": pubkey_hex}, clear=False):
@@ -256,7 +260,7 @@ class TestNostrAdapterInit:
 
     def test_adapter_init_parses_npub_in_allowlist(self):
         """Allowlist must accept npub bech32 form, normalizing to hex."""
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         from nostr_sdk import Keys
         # Generate a known npub from a known privkey
         keys = Keys.parse("ab" * 32)
@@ -267,16 +271,25 @@ class TestNostrAdapterInit:
             adapter = NostrAdapter(config)
         assert expected_hex in adapter._allowed_pubkeys
 
-    def test_adapter_missing_token_raises(self):
-        from gateway.platforms.nostr import NostrAdapter
+    def test_adapter_missing_token_fails_connect(self):
+        # Plugin contract: __init__ is lenient (no raise) so the platform
+        # registry / env-only setups can construct the adapter before config is
+        # populated; connect() performs the deferred validation and records a
+        # non-retryable fatal error when the private key is absent. #41112.
+        import asyncio
+        from plugins.platforms.nostr.adapter import NostrAdapter
         from gateway.config import PlatformConfig
         config = PlatformConfig(enabled=True, token="", extra={"relays": "wss://x.com"})
-        with pytest.raises(ValueError, match="NOSTR_PRIVATE_KEY"):
-            NostrAdapter(config)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NOSTR_PRIVATE_KEY", None)
+            adapter = NostrAdapter(config)
+            assert adapter._keys is None and adapter._signer is None
+            assert asyncio.run(adapter.connect()) is False
+        assert adapter.fatal_error_message and "NOSTR_PRIVATE_KEY" in adapter.fatal_error_message
 
     def test_adapter_default_denies_all(self):
         """Empty NOSTR_ALLOWED_NPUBS must default to deny-all, not open access."""
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         config = self._make_config()
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("NOSTR_ALLOWED_NPUBS", None)
@@ -286,7 +299,7 @@ class TestNostrAdapterInit:
 
     def test_adapter_star_allows_all(self):
         """NOSTR_ALLOWED_NPUBS=* must set allow-all flag."""
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         config = self._make_config()
         with patch.dict(os.environ, {"NOSTR_ALLOWED_NPUBS": "*"}, clear=False):
             adapter = NostrAdapter(config)
@@ -299,7 +312,7 @@ class TestNostrAdapterInit:
         # boolean (matching Discord/Slack muscle memory) would silently still be
         # denied at the adapter's _process_event allowlist check, because the
         # gateway-level gate that reads the boolean runs after that check.
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         config = self._make_config()
         with patch.dict(
             os.environ,
@@ -313,7 +326,7 @@ class TestNostrAdapterInit:
 
     def test_adapter_allow_all_users_accepts_truthy_variants(self):
         # Mirrors gateway/run.py:_is_user_authorized which accepts {true,1,yes}.
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         for variant in ("true", "True", "TRUE", "1", "yes", "YES"):
             config = self._make_config()
             with patch.dict(os.environ, {"NOSTR_ALLOW_ALL_USERS": variant}, clear=False):
@@ -324,7 +337,7 @@ class TestNostrAdapterInit:
     def test_adapter_allow_all_users_falsy_does_not_open(self):
         # Empty / false / random strings must NOT open the adapter gate — that
         # would silently weaken the default-deny default.
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         for variant in ("", "false", "no", "0", "maybe"):
             config = self._make_config()
             with patch.dict(os.environ, {"NOSTR_ALLOW_ALL_USERS": variant}, clear=False):
@@ -332,15 +345,22 @@ class TestNostrAdapterInit:
                 adapter = NostrAdapter(config)
             assert not adapter._allow_all_npubs, f"{variant!r} must not open the gate"
 
-    def test_adapter_missing_relays_raises(self):
-        from gateway.platforms.nostr import NostrAdapter
+    def test_adapter_missing_relays_fails_connect(self):
+        # Plugin contract: missing relays no longer raises at construction;
+        # connect() enforces the ≥1-relay requirement via a fatal error. #41112.
+        import asyncio
+        from plugins.platforms.nostr.adapter import NostrAdapter
         from gateway.config import PlatformConfig
         config = PlatformConfig(enabled=True, token="01" * 32, extra={"relays": ""})
-        with pytest.raises(ValueError, match="NOSTR_RELAYS"):
-            NostrAdapter(config)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NOSTR_RELAYS", None)
+            adapter = NostrAdapter(config)
+            assert adapter._relay_urls == []
+            assert asyncio.run(adapter.connect()) is False
+        assert adapter.fatal_error_message and "NOSTR_RELAYS" in adapter.fatal_error_message
 
     def test_adapter_lookback_default_is_48h(self):
-        from gateway.platforms.nostr import NostrAdapter, NIP59_MIN_LOOKBACK_MINUTES
+        from plugins.platforms.nostr.adapter import NostrAdapter, NIP59_MIN_LOOKBACK_MINUTES
         config = self._make_config()
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("NOSTR_ALLOWED_NPUBS", None)
@@ -348,7 +368,7 @@ class TestNostrAdapterInit:
         assert adapter._lookback_seconds == NIP59_MIN_LOOKBACK_MINUTES * 60
 
     def test_adapter_lookback_overrides_via_extra(self):
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         config = self._make_config(extra={"lookback_minutes": "60"})
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("NOSTR_ALLOWED_NPUBS", None)
@@ -400,7 +420,7 @@ class TestNostrAdapterRuntime:
 
     @pytest.mark.asyncio
     async def test_process_event_drops_disallowed_sender(self):
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         from nostr_sdk import Keys
 
         # Default deny-all
@@ -416,7 +436,7 @@ class TestNostrAdapterRuntime:
         adapter.handle_message = AsyncMock()
         adapter._save_seen_ids = MagicMock()
 
-        with patch("gateway.platforms.nostr.UnwrappedGift") as mock_uw:
+        with patch("plugins.platforms.nostr.adapter.UnwrappedGift") as mock_uw:
             mock_uw.from_gift_wrap = AsyncMock(return_value=unwrapped)
             await adapter._process_event(event, "wss://relay.example.com")
 
@@ -428,7 +448,7 @@ class TestNostrAdapterRuntime:
         # Allowlist check runs BEFORE the seen-list insert (see _process_event).
         # If a blocked sender's id ever landed in _seen_event_ids, a flood from
         # disallowed senders could evict legitimate ids and enable replay.
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         from nostr_sdk import Keys
 
         config = self._make_config()
@@ -444,7 +464,7 @@ class TestNostrAdapterRuntime:
         adapter.handle_message = AsyncMock()
         adapter._save_seen_ids = MagicMock()
 
-        with patch("gateway.platforms.nostr.UnwrappedGift") as mock_uw:
+        with patch("plugins.platforms.nostr.adapter.UnwrappedGift") as mock_uw:
             mock_uw.from_gift_wrap = AsyncMock(return_value=unwrapped)
             await adapter._process_event(event, "wss://relay.example.com")
             await adapter._process_event(event, "wss://relay.example.com")
@@ -457,7 +477,7 @@ class TestNostrAdapterRuntime:
 
     @pytest.mark.asyncio
     async def test_process_event_rejects_self_message(self):
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         from nostr_sdk import Keys
 
         privkey_hex = "01" * 32
@@ -472,7 +492,7 @@ class TestNostrAdapterRuntime:
 
         adapter.handle_message = AsyncMock()
 
-        with patch("gateway.platforms.nostr.UnwrappedGift") as mock_uw:
+        with patch("plugins.platforms.nostr.adapter.UnwrappedGift") as mock_uw:
             mock_uw.from_gift_wrap = AsyncMock(return_value=unwrapped)
             await adapter._process_event(event, "wss://relay.example.com")
 
@@ -481,7 +501,7 @@ class TestNostrAdapterRuntime:
     @pytest.mark.asyncio
     async def test_send_attaches_nip40_expiration_tag(self):
         import time
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         from nostr_sdk import Keys
 
         # 60-minute TTL is far from any default so the bound check is meaningful
@@ -516,7 +536,7 @@ class TestNostrAdapterRuntime:
 
     @pytest.mark.asyncio
     async def test_send_returns_error_when_not_connected(self):
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
 
         config = self._make_config()
         with patch.dict(os.environ, {}, clear=False):
@@ -534,7 +554,7 @@ class TestNostrAdapterRuntime:
         # declaring MAX_MESSAGE_LENGTH is inert unless send() actually splits.
         # A >MAX_MESSAGE_LENGTH reply must go out as multiple NIP-17 DMs, each
         # with its own self-copy.
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         from nostr_sdk import Keys
 
         config = self._make_config()
@@ -563,7 +583,7 @@ class TestNostrAdapterRuntime:
 
     @pytest.mark.asyncio
     async def test_send_skips_empty_content(self):
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         from nostr_sdk import Keys
 
         config = self._make_config()
@@ -602,7 +622,7 @@ class TestNostrConnectLifecycle:
         # Without this guard the bot would be running but deaf and mute —
         # connected to zero relays with the notification loop blissfully
         # waiting for events that can't arrive.
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
 
         config = self._make_config(relays="wss://r1.example.com,wss://r2.example.com")
         with patch.dict(os.environ, {}, clear=False):
@@ -616,7 +636,7 @@ class TestNostrConnectLifecycle:
         mock_client.connect = AsyncMock()
         mock_client.subscribe = AsyncMock()
 
-        with patch("gateway.platforms.nostr.Client", return_value=mock_client):
+        with patch("plugins.platforms.nostr.adapter.Client", return_value=mock_client):
             ok = await adapter.connect()
 
         assert ok is False
@@ -630,7 +650,7 @@ class TestNostrConnectLifecycle:
         # wraps, double-send outbound DMs, and corrupt the pubkey-scoped dedup
         # file. connect() must bail before building a client when the
         # identity lock is already held elsewhere.
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
 
         config = self._make_config()
         with patch.dict(os.environ, {}, clear=False):
@@ -643,7 +663,7 @@ class TestNostrConnectLifecycle:
         mock_client = MagicMock()
         mock_client.connect = AsyncMock()
 
-        with patch("gateway.platforms.nostr.Client", return_value=mock_client):
+        with patch("plugins.platforms.nostr.adapter.Client", return_value=mock_client):
             ok = await adapter.connect()
 
         assert ok is False
@@ -659,7 +679,7 @@ class TestNostrConnectLifecycle:
     async def test_connect_releases_identity_lock_when_all_relays_fail(self):
         # The zero-relay bail-out must not leak the identity lock, or a clean
         # restart on the same nsec would falsely report the identity in use.
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
 
         config = self._make_config(relays="wss://r1.example.com")
         with patch.dict(os.environ, {}, clear=False):
@@ -673,7 +693,7 @@ class TestNostrConnectLifecycle:
         mock_client = MagicMock()
         mock_client.add_relay = AsyncMock(side_effect=RuntimeError("relay rejected"))
 
-        with patch("gateway.platforms.nostr.Client", return_value=mock_client):
+        with patch("plugins.platforms.nostr.adapter.Client", return_value=mock_client):
             ok = await adapter.connect()
 
         assert ok is False
@@ -683,7 +703,7 @@ class TestNostrConnectLifecycle:
     async def test_disconnect_cancels_watchdog_before_notif_task(self):
         # disconnect() must stop the watchdog first so it can't kick off a
         # recovery cycle while we're tearing the client down.
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
 
         config = self._make_config()
         with patch.dict(os.environ, {}, clear=False):
@@ -712,7 +732,7 @@ class TestNostrConnectLifecycle:
         # short-lived adapters that republish profile/relay metadata. The
         # ClassVar must be cleared on disconnect so a stale reference doesn't
         # outlive the connection.
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
 
         config = self._make_config()
         with patch.dict(os.environ, {}, clear=False):
@@ -749,7 +769,7 @@ class TestNostrWatchdog:
         )
 
     def _make_adapter(self):
-        from gateway.platforms.nostr import NostrAdapter
+        from plugins.platforms.nostr.adapter import NostrAdapter
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("NOSTR_ALLOWED_NPUBS", None)
             adapter = NostrAdapter(self._make_config())
@@ -971,4 +991,4 @@ class TestNostrWatchdog:
 
 # NIP59_MIN_LOOKBACK_MINUTES is imported by tests above; re-import here for
 # the watchdog lookback assertion.
-from gateway.platforms.nostr import NIP59_MIN_LOOKBACK_MINUTES  # noqa: E402
+from plugins.platforms.nostr.adapter import NIP59_MIN_LOOKBACK_MINUTES  # noqa: E402
